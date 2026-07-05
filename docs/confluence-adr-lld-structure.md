@@ -60,7 +60,15 @@ Home
 │   ├── Incident Postmortems
 │   └── On-Call & Escalation
 │
-└── 04 · Reference
+├── 04 · Tech Debt
+│   ├── _Tech Debt Register          (auto-built, Page Properties Report)
+│   ├── _Tech Debt Template
+│   ├── Streaming                    [stream]
+│   ├── API Gateway                  [api-gw]
+│   ├── Autosys / Batch              [batch]
+│   └── Cross-Platform               [cross]
+│
+└── 05 · Reference
     ├── Naming Conventions & Labels
     ├── Glossary
     └── Environments & Access
@@ -76,6 +84,16 @@ its LLD, its runbook, and its dashboard. This is the page Cloud Ops opens
 during an incident — it doesn't need to know the ADR folder structure to find
 the design rationale behind a service it's paging on. The catalog page is
 where the type-first and domain-first views meet.
+
+## Tech Debt Register: tracking known compromises without losing them
+
+An ADR is sometimes "accepted, but with a known trade-off" — a shortcut taken
+to hit a delivery date, a deprecated client library still in use, a manual
+step that should be automated. Without a dedicated home, these live in
+someone's head or a stale Jira label. The Tech Debt Register gives them a
+page of their own, cross-linked back to the ADR/LLD/Service Catalog page that
+introduced the trade-off, so the debt is visible to whoever owns that service
+next — including Cloud Ops, who often discovers debt first via an incident.
 
 ## Templates
 
@@ -116,6 +134,16 @@ links.
 6. **DR / failover steps**
 7. **Change log**
 
+### Tech Debt Entry (`TD-<DOMAIN>-<NNN>`)
+
+1. **Status** — identified / prioritized / in progress / resolved / accepted risk
+2. **Category** — security, performance, scalability, maintainability, deprecated dependency, missing automation
+3. **Description & root cause**
+4. **Impact if unaddressed** — severity + blast radius
+5. **Proposed remediation** & effort estimate
+6. **Related ADR / LLD / Service Catalog page**
+7. **Owner, date identified, target review date**
+
 ## Governance: ADR lifecycle
 
 Status lives in the Page Properties macro, not in the title — so an ADR's URL
@@ -130,6 +158,19 @@ Draft → In Review → Accepted → Superseded
 - **Accepted** — binding, linked from LLD
 - **Superseded** — linked forward to its replacement
 
+## Governance: tech debt lifecycle
+
+```
+Identified → Prioritized → In Progress → Resolved
+                  └──────────────→ Accepted Risk
+```
+
+- **Identified** — logged by whoever finds it (either team)
+- **Prioritized** — triaged by the Architecture Review Board against severity and effort
+- **In Progress** — remediation underway, linked to a Jira ticket
+- **Resolved** — closed out, linked commit/PR or config change
+- **Accepted Risk** — a valid terminal state; documented reason required, revisited at the target review date
+
 ## Taxonomy: labels that power the auto-indexes
 
 Confluence labels are the only thing making the `_ADR Index` and `_LLD Index`
@@ -138,10 +179,11 @@ label. Apply all that are relevant to every page.
 
 | Facet | Values | Applied to |
 |---|---|---|
-| Type | `adr` · `lld` · `runbook` · `postmortem` | every page |
+| Type | `adr` · `lld` · `runbook` · `postmortem` · `tech-debt` | every page |
 | Domain | `streaming` · `api-gateway` · `autosys` · `cross-platform` | every page |
 | Status | `draft` · `in-review` · `accepted` · `deprecated` | ADR, LLD |
 | Environment | `prod` · `nonprod` | runbooks |
+| Severity | `low` · `medium` · `high` · `critical` | tech debt entries |
 
 ## Who owns what
 
@@ -155,6 +197,7 @@ permissions, set at the folder level in Confluence's page restrictions.
 | Runbook | Reviewer, technical accuracy | **Author & maintainer** |
 | Service Catalog page | Co-author at launch | **Maintainer thereafter** |
 | Postmortem | Co-author | **Author** (incident owner) |
+| Tech Debt entry | **Author** (either team may log) | Reviewer, prioritization input |
 
 ## Automation notes
 
@@ -165,3 +208,58 @@ permissions, set at the folder level in Confluence's page restrictions.
   content grows.
 - Link every ADR/LLD to its Jira epic or story so decision history is
   traceable from delivery tracking as well as from Confluence.
+
+## Worked examples
+
+One filled sample per template, showing the level of detail expected in
+each field.
+
+### Sample ADR — `ADR-STREAM-014`
+
+| Field | Content |
+|---|---|
+| **Title** | Adopt Confluent Schema Registry with Avro for Order Events |
+| **Status** | Accepted |
+| **Context** | `orders.events.v1` consumers (3 internal, 1 partner-facing via API Gateway) keep breaking on producer field changes. No shared contract exists today; producers ship whatever JSON shape is convenient. |
+| **Decision** | All new Kafka topics register an Avro schema in Confluent Schema Registry with `BACKWARD` compatibility enforced at the registry level. Existing topics migrate on their next breaking change. |
+| **Alternatives considered** | (1) JSON Schema — weaker type guarantees, larger payloads. (2) Protobuf — better typing, but no existing team tooling; would require new codegen pipeline. |
+| **Consequences** | + Compile-time contract safety, smaller payloads, safe evolution. − Producers need codegen step in CI; one-time migration effort for 6 existing topics. |
+| **Related LLD** | `LLD-STREAM-014` · Jira `PLAT-118` |
+| **Owner / reviewers / date** | J. Alvarez (author) · Cloud Ops, API Gateway lead (reviewers) · 2026-03-02 |
+
+### Sample LLD — `LLD-API-GW-007`
+
+| Field | Content |
+|---|---|
+| **Overview & scope** | Rate limiting for the partner-facing `/payments/v2` API, exposed via AWS API Gateway. Covers usage-plan design, key issuance, and throttling behavior; excludes partner onboarding workflow. |
+| **Requirements** | 500 req/s sustained, 1000 req/s burst per partner key. 99.9% availability SLA. Throttled requests must return `429` with `Retry-After`. |
+| **Architecture diagram** | Partner → API Gateway (usage plan + API key) → Lambda authorizer → VPC Link → internal payments service. |
+| **Interfaces** | API Gateway usage plan per partner tier (Bronze/Silver/Gold); API key stored in Secrets Manager; contract in `payments-api-v2.yaml` (OpenAPI). |
+| **Failure modes & recovery** | Authorizer Lambda cold start latency spike → provisioned concurrency of 2. Downstream payments service degradation → circuit breaker returns cached `503` with backoff hint. |
+| **Capacity & scaling** | Usage plans reviewed quarterly against partner growth; API Gateway scales automatically, VPC Link concurrency capped and alarmed at 80%. |
+| **Security & monitoring** | WAF rate-based rule as a backstop below the usage-plan limit; CloudWatch alarms on 4xx/5xx rate and p99 latency; key rotation every 90 days. |
+| **Ops handoff checklist** | ✅ Runbook `OPS-API-GW-PAYMENTS` drafted · ✅ Dashboards linked · ✅ On-call briefed on key-rotation SOP · ✅ Escalation contact for partner confirmed |
+
+### Sample Runbook — `OPS-BATCH-EOD`
+
+| Field | Content |
+|---|---|
+| **Service summary** | `EOD_SETTLE_001` — Autosys job, runs nightly 23:30 UTC, settles the day's transactions. Links: `ADR-BATCH-004`, `LLD-BATCH-004`, Grafana dashboard `autosys-eod`. |
+| **Normal operation** | Job box `EOD_SETTLE_001` completes in ~40 min; watch `JOBS_RUNNING` and `EXIT_CODE` in the Autosys dashboard; success event posts to `#batch-ops`. |
+| **Failure scenarios & remediation** | *Upstream feed late* → hold box auto-waits until 01:00 UTC, page on-call if still waiting after that. *Non-zero exit* → check job log in `/logs/eod_settle/`, rerun from last successful checkpoint via `sendevent -E FORCE_STARTJOB`. |
+| **Escalation path** | Cloud Ops on-call (PagerDuty `batch-ops`) → Settlement platform lead → Product owner, in that order, 15-min response SLA. |
+| **Maintenance procedures** | Calendar changes (holiday schedules) require a change ticket + Autosys calendar update, tested in UAT box first. |
+| **DR / failover steps** | If the primary Autosys instance is down, failover job definitions are pre-loaded on the DR instance; manual trigger required, see `DR-BATCH-RUNBOOK`. |
+| **Change log** | 2026-01-14 — added checkpoint-based rerun (was full-rerun only). |
+
+### Sample Tech Debt entry — `TD-STREAM-009`
+
+| Field | Content |
+|---|---|
+| **Status** | Accepted Risk |
+| **Category** | Deprecated dependency |
+| **Description & root cause** | All Kafka consumers still pinned to client library `2.8.x`, EOL'd by Confluent. Upgrade was deferred during the Q3 migration crunch. |
+| **Impact if unaddressed** | Medium severity — no current CVE, but blocks adoption of newer exactly-once semantics improvements and will block future broker upgrades. |
+| **Proposed remediation** | Bump to `3.6.x` client across 6 services; estimated 3 days per service including regression testing. |
+| **Related page** | `ADR-STREAM-014`, Service Catalog `orders.events.v1` |
+| **Owner / dates** | M. Chen (identified 2026-02-10) · reviewed quarterly, next review 2026-08-01 |
